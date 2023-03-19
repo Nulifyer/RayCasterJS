@@ -1,0 +1,15 @@
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    font-family: monospace;
+    font-size: 16px;
+    background: #2a2a2a;
+    margin: 0;
+    padding: 0;
+}
+
+canvas {
+    position: fixed;
+}
