@@ -84,7 +84,12 @@ class Ray {
     }
 
     #end;
-    get end() { return this.#end.copy(); }
+    get end() { return this.#end.copy(); }    
+
+    get lookingUp() { return 180 < this.#angle && this.#angle < 360; }
+    get lookingDown() { return 0 < this.#angle && this.#angle < 180; }
+    get lookingRight() { return 270 < this.#angle || this.#angle < 90; }
+    get lookingLeft() { return 90 < this.#angle && this.#angle < 270; }
 
     constructor(pos, angle, len) {
         this.#pos = pos;
@@ -125,6 +130,10 @@ class Ray {
         );
     }
 
+    intersectionPoint(rayB) {
+        return Ray.intersectionPoint(this, rayB);
+    }
+
     intersects(x1, y1, x2, y2) {
         if (x1 instanceof Ray) {
             const ip = Ray.intersectionPoint(this, x1);
@@ -138,6 +147,38 @@ class Ray {
 
     draw() {
         line(this.pos.x, this.pos.y, this.#end.x, this.#end.y);
+    }
+
+    closestIntersection(rays, ignoreFunc) {
+        let c_ip = null, c_dist = Infinity;
+
+        for(const r of rays) {
+            const ip = this.intersectionPoint(r);
+            if (ip === false) continue;
+
+            //fill(255, 0, 0);
+            //ellipse(ip.x, ip.y, 5, 5);
+
+            if (typeof ignoreFunc === 'function' && ignoreFunc(ip, r, this) === true)
+                continue;
+
+            //fill(0, 255, 0);
+            //ellipse(ip.x, ip.y, 10, 10);
+            
+            const dist = this.pos.dist(ip);
+
+            if (dist < c_dist) {
+                c_ip = ip;
+                c_dist = dist;
+            }
+        }
+
+        if (c_ip === null)
+            return [false, Infinity];
+
+        //fill(0, 0, 255);
+        //ellipse(c_ip.x, c_ip.y, 15, 15);
+        return [c_ip, c_dist];
     }
 
     static intersectionPoint(rayA, rayB) {
@@ -159,6 +200,9 @@ class Ray {
         const x = rayA.pos.x + ua * (rayA.end.x - rayA.pos.x);
         const y = rayA.pos.y + ua * (rayA.end.y - rayA.pos.y);
 
+        if (Number.isNaN(x) || Number.isNaN(y))
+            return false;
+
         return createVector(x, y);
     }
 
@@ -173,7 +217,7 @@ class Player {
     #heading;
     get heading() { return this.#heading; }
     set heading(value) {
-        this.#heading = value % 360;
+        this.#heading = (value + 360) % 360;
         this.#buildRays();
     }
 
@@ -191,28 +235,46 @@ class Player {
         this.#buildRays();
     }
 
+    #fovStep;
+    get fovStep() { return this.#fovStep; }
+    set fovStep(value) {
+        this.#fovStep = value;
+        this.#buildRays();
+    }
+
+    get lookingUp() { return 180 < this.#heading && this.#heading < 360; }
+    get lookingDown() { return 0 < this.#heading && this.#heading < 180; }
+    get lookingRight() { return 270 < this.#heading || this.#heading < 90; }
+    get lookingLeft() { return 90 < this.#heading && this.#heading < 270; }
+
     constructor(x, y) {
-        this.pos = createVector(x, y);
+        this.#pos = createVector(x, y);
         this.vel = createVector(0, 0);
         this.acc = createVector(0, 0);
         this.maxSpeed = -1;
         this.mass = 20;
-        this.heading = 0;
-        this.fov = 60;
+        this.#heading = 0;
+        this.#fov = 60;
+        this.#fovStep = 1;
+        this.#buildRays();
     }
 
     #buildRays() {
+        const step = 1 / this.fovStep;
         let min = Math.floor(this.heading - this.#fov / 2);
-        this.rays = new Array(this.fov)
+        this.rays = new Array(this.fov * this.fovStep)
             .fill(undefined)
-            .map((_, i) => ++min)
-            .map((a, _) => new Ray(this.pos, a, 0));
+            .map((_, i) => min += step)
+            .map((a, _) => new Ray(this.pos, a, 1));
     }
 
     rotate(degrees) {
         this.heading = this.heading + degrees;
+
+        const step = 1 / this.fovStep;
         let min = Math.floor(this.heading - this.#fov / 2);
-        this.rays?.forEach(r => r.angle = ++min);
+        
+        this.rays?.forEach(r => r.angle = min += step);
     }
 
     forwardBack(amt) {
@@ -240,35 +302,36 @@ class Player {
         stroke(255,0,0);
         strokeWeight(1);
         fill(0, 255, 0);
+
+        const ignoreIP = (ip, _, r) => {            
+            const gPos = level.screenToLevelGrid(ip.x, ip.y);
+            const gv = level.getFromGrid(gPos[0], gPos[1]);
+            return gv === undefined || gv === 0;
+        };
+
         for (const r of this.rays) {
-            r.len = 0;
-            let hit_wall = false;
-            let step_size = level.cubeRadius;
-            while (level.isInScreenBounds(r.end.x, r.end.y)) {
-                r.len += step_size;
-                const gpos = level.screenToLevel(r.end.x, r.end.y);
-                if (level.getFromGrid(...gpos) !== 0) { // Hit wall
-                    if (hit_wall === false) {
-                        r.len -= level.cubeSize;
-                        step_size = 1;
-                        hit_wall = true;
-                    }
-                    else {
-                        let sides = Object.values(level.getLevelPositionScreenSideRays(...gpos));
-                        sides.forEach(r => r.draw());
-                        sides = sides.map(s => {
-                            const x = s.intersects(r);
-                            return { ...x, dist: r.pos.dist(x.ip) };
-                        });
-                        sides
-                            .filter(s => s.int === true)
-                            .forEach(s => ellipse(s.ip.x, s.ip.y, 4, 4))
-                        sides.sort((a, b) => a.dist - b.dist);
-                        const closest = sides.find(s => s.int === true);
-                        if (closest) r.len = closest.dist;
-                        break;
-                    }                        
-                }
+            r.len = 1;
+
+            let h_ip = false;
+            let h_ip_dist = Infinity;
+            if (r.lookingUp || r.lookingDown) {
+                const hrays = Object.keys(level.horizontalRays)
+                    .filter(y => r.lookingUp ? y < r.pos.y : y > r.pos.y)
+                    .map(y => level.horizontalRays[y]);
+                [h_ip, h_ip_dist] = r.closestIntersection(hrays, ignoreIP);
+            }
+
+            let v_ip = false;
+            let v_ip_dist = Infinity;
+            if (r.lookingLeft || r.lookingRight) {
+                const vrays = Object.keys(level.verticalRays)
+                    .filter(x => r.lookingLeft ? x < r.pos.x : x > r.pos.x)
+                    .map(x => level.verticalRays[x]);
+                [v_ip, v_ip_dist] = r.closestIntersection(vrays, ignoreIP);
+            }
+            
+            if (h_ip !== false || v_ip !== false) {
+                r.len = h_ip_dist < v_ip_dist ? h_ip_dist : v_ip_dist;
             }
         }
         pop();
@@ -291,6 +354,27 @@ class Player {
 
         pop();
     }
+
+    get2DView(level) {
+        const bounds = level.getLevelScreenBounds();
+        return this.rays
+            .map(r => {
+                const gpos = level.screenToLevel(r.end.x, r.end.y);
+                const gv = level.getFromGrid(...gpos);
+                
+                if (gv === 0) // nothing seen, draw black
+                    return 0;
+
+                let dist = r.len;
+                let cosA = radians(Math.abs(this.heading - r.angle));
+                if (cosA < 0) cosA += Math.PI * 2;
+                if (cosA > Math.PI * 2) cosA -= Math.PI * 2;
+                dist *= Math.cos(cosA);
+
+                const c = map(dist, 0, Math.max(bounds.right, bounds.bottom), 255, 0);
+                return c;
+            })
+    }
 }
 
 class GameLevel {
@@ -306,6 +390,7 @@ class GameLevel {
     set cubeSize(value) {
         this.#cubeSize = value;
         this.#cubeRadius = value / 2;
+        this.#resize();
     }
 
     constructor(level, width, height, options = {}) {
@@ -313,7 +398,7 @@ class GameLevel {
         this._gridWidth = width;
         this._gridHeight = height;
 
-        this.#cubeSize = options.cubeSize;
+        this.cubeSize = options.cubeSize;
         if (this.cubeSize === undefined) {
             const minDim = Math.min(windowWidth, windowHeight);
             this.cubeSize = minDim / Math.max(this._gridWidth, this._gridHeight);
@@ -322,15 +407,38 @@ class GameLevel {
 
         this.borderSize = options.borderSize ?? 2;
 
+        this.#buildRays();
+    }
+
+    #buildRays() {
         const bounds = this.getLevelScreenBounds();
+        const offset = 0.0000001;
         this.horizontalRays = new Array(this._gridHeight + 1)
             .fill(undefined)
-            .map((_, i) => Ray.fromVectors(createVector(bounds.left, i * this.cubeSize), createVector(bounds.right, i * this.cubeSize)));
+            .map((_, i) => {
+                const y = i * this.cubeSize;
+                return [
+                    Ray.fromVectors(createVector(bounds.left, y - offset), createVector(bounds.right, y - offset)),
+                    Ray.fromVectors(createVector(bounds.left, y + offset), createVector(bounds.right, y + offset)),
+                ];
+            })
+            .flat();
         this.horizontalRays = this.horizontalRays.reduce((a, r) => { a[r.pos.y] = r; return a; }, {});
         this.verticalRays = new Array(this._gridWidth + 1)
             .fill(undefined)
-            .map((_, i) => Ray.fromVectors(createVector(i * this.cubeSize, bounds.top), createVector(i * this.cubeSize, bounds.bottom)));
+            .map((_, i) => {
+                const x = i * this.cubeSize;
+                return [
+                    Ray.fromVectors(createVector(x - offset, bounds.top), createVector(x - offset, bounds.bottom)),
+                    Ray.fromVectors(createVector(x + offset, bounds.top), createVector(x + offset, bounds.bottom)),
+                ];
+            })
+            .flat();
         this.verticalRays = this.verticalRays.reduce((a, r) => { a[r.pos.x] = r; return a; }, {});
+    }
+
+    #resize() {
+        this.#buildRays();
     }
 
     getFromGrid(x, y) {
@@ -414,6 +522,38 @@ class GameLevel {
         }
 
         pop();
+    }   
+
+    drawBoundingRays() {
+        push();
+
+        strokeWeight(2);
+
+        stroke(0, 50, 150);
+        Object.values(this.horizontalRays).forEach(r => r.draw());
+
+        stroke(150, 50, 0);        
+        Object.values(this.verticalRays).forEach(r => r.draw());
+
+        pop();
+    }
+
+    static generateLevel(width, height, options = {}) {
+        options.borderSize ??= 1;
+
+        const level = new Array(width * height)
+            .fill(0)
+            .map((_, i, a) => {
+                const x = i % width;
+                const y = Math.floor(i / width);
+                
+                if (x === 0 || x === width - 1 || y === 0 || y === height - 1) // walls
+                    return 1;
+                
+                return Math.random() <= .333 ? 1 : 0;
+            })
+        
+        return new GameLevel(level, width, height, options);
     }
 }
 
@@ -441,30 +581,65 @@ function setup() {
         1, 1, 1, 1, 1, 1, 1, 1,
     ];
     level = new GameLevel(l, 8, 8, {
-        borderSize: 1
+        borderSize: 1,
+        cubeSize: (width / 2) / 8
     });
 
     p.pos = level.levelToScreen(1, 1);
-    p.fov = 1;
+    p.fov = 45;
+    p.fovStep = 10;
+}
+
+function randomLevel(width, height) {
+    level = GameLevel.generateLevel(width, height, {
+        borderSize: 1,
+        cubeSize: (self.width / 2) / width
+    })
 }
 
 function draw() {
     background(20);
 
     if (kb.isAnyPressed()) {
+        if (kb.isPressed('R'))
+            randomLevel(15, 15);
+
         // move player
         if (kb.isAnyPressed('A', 'ArrowLeft'))
             p.rotate(-2);
         if (kb.isAnyPressed('D', 'ArrowRight'))
             p.rotate(2);
         if (kb.isAnyPressed('W', 'ArrowUp'))
-            p.forwardBack(3);
+            p.forwardBack(level.cubeSize / 50);
         if (kb.isAnyPressed('S', 'ArrowDown'))
-            p.forwardBack(-3);
+            p.forwardBack(-(level.cubeSize / 50));
     }
 
     p.move();    
     level.draw();
+    //level.drawBoundingRays();
     p.castRaysToLevel(level);
     p.draw();
+    
+    // draw first person view
+    push();
+    noStroke();
+    const view = p.get2DView(level);
+    const bounds = level.getLevelScreenBounds();
+    const maxBounds = Math.max(bounds.right, bounds.bottom);
+    const vWidth = width;
+    const vHeight = height;
+    const maxHeight = Math.min(vWidth / 1.78, 320); // 16:9
+    const recWidth = vWidth / view.length;
+    translate(bounds.right + 10, 0);
+
+    const minColor = 60;
+    for (const [i, v] of view.entries()) {
+        const h = map(v, 0, 255, 10, maxHeight);
+        v > minColor
+            ? fill(map(v, 0, 255, minColor, 255))
+            : fill(0);
+        rect(0 + (i * recWidth / 2), vHeight / 2, recWidth / 2, h / 2);
+    }
+    pop();
 }
